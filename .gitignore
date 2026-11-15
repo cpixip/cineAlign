@@ -1,0 +1,33 @@
+# --- personal state, never in the repo -------------------------------------
+# cineAlignQt writes this on exit: your input and output folder, the view.
+# It is created on first start, so nothing is missing without it.
+cineAlignQt_settings.json
+
+# Search area and switches belong next to the material, not here.
+_cineAlign/
+cineAlign_run.json
+
+# --- material and output ---------------------------------------------------
+*.tif
+*.tiff
+*.dng
+*.png
+!images/*.png
+*.cube
+
+# --- python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- editors and systems ---------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
