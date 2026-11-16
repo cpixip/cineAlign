@@ -30,7 +30,7 @@ from readImage          import readImage
 from write16            import writeTIF16
 from cubeLut            import CubeLut
 
-VERSION          = '2.4'
+VERSION          = '2.5'
 
 defaultDir       = '.'
 saveDir          = '02_SPR'
@@ -144,25 +144,28 @@ def processImage(para):
     imgPath, outputName, lut, align = para[:4]
     roi = para[4] if len(para) > 4 and para[4] is not None else ROI_DEFAULT
     hRef = para[5] if len(para) > 5 else None
+    horiz = hRef is not None
+    search = align or horiz
 
     try:
         inputImg = readImage(imgPath)
 
-        if align:
+        if search:
             log = SHIFT_LOG
             info = {} if log is not None else None
-            horiz = hRef is not None
             shiftX, shiftY = sprocketDetectFast(inputImg, roi=roi, horizontal=horiz, hRef=hRef,
                                                 info=info)
+            if not align:
+                shiftY = 0
             if log is not None:
-                log[imgPath] = (int(shiftY), info.get('route', 'none'),
+                log[imgPath] = (int(shiftY) if align else None, info.get('route', 'none'),
                                 int(shiftX) if horiz else None,
                                 info.get('hroute', 'none') if horiz else None)
 
         if lut is not None:
             inputImg = lut.apply(inputImg)
 
-        outputImage = shiftImg(inputImg, shiftX, shiftY) if align else inputImg
+        outputImage = shiftImg(inputImg, shiftX, shiftY) if search else inputImg
 
         writeTIF16(outputName, outputImage)
 
@@ -358,10 +361,14 @@ def collectTasks(inputDir, outputDir, makeDirs=True, progress=None):
 
 def summaryLines(tasks, scenes, emptyDirs, stale, mode, align, roi=None, frameRange=None,
                  horizontal=False, edgeRef=None):
+    hz = horizontal and edgeRef is not None
+    what = ('align to sprocket hole, vertically and horizontally' if align and hz
+            else 'align to sprocket hole, vertically' if align
+            else 'align to sprocket hole, horizontally only' if hz
+            else 'no alignment -- colour correction only')
     out = ['.... mode      : %s' % ('scene folders' if mode == 'mirror' else 'flat directory'),
-           '.... sprocket  : %s' % ('align to sprocket hole' if align
-                                    else 'no alignment -- colour correction only')]
-    if align:
+           '.... sprocket  : %s' % what]
+    if align or horizontal:
         r = roi if roi is not None else ROI_DEFAULT
         out.append('.... search    : left %.3f right %.3f top %.3f bottom %.3f%s'
                    % (r[0], r[1], r[2], r[3], '' if roi is not None else '  (default)'))
@@ -379,7 +386,7 @@ def summaryLines(tasks, scenes, emptyDirs, stale, mode, align, roi=None, frameRa
     for sc in scenes:
         where = ('%-24s' % sc['name']) if sc['name'] else ''
         base = sc['base']
-        nolut = 'none -- alignment only' if align else 'none -- copy only'
+        nolut = 'none -- alignment only' if (align or hz) else 'none -- copy only'
         if base is None and not sc['ranges']:
             out.append('.... LUT       : %s%s' % (where, nolut))
             continue
@@ -413,17 +420,18 @@ def progressLine(done, total, seconds):
 
 def writeRunLog(outputDir, inputDir, mode, align, scenes, done, errors, stale, seconds,
                 roi=None, frameRange=None, edgeRef=None):
+    hz = edgeRef is not None
     doc = {
         'cineAlign': VERSION,
         'time': datetime.datetime.now().isoformat(timespec='seconds'),
         'input': os.path.abspath(inputDir),
         'output': os.path.abspath(outputDir),
         'mode': 'scene folders' if mode == 'mirror' else 'flat directory',
-        'sprocket_align': align,
+        'sprocket_align': bool(align or hz),
+        'vertical_align': bool(align),
         'search_area': ([round(float(v), 4) for v in (roi if roi is not None else ROI_DEFAULT)]
-                        if align else None),
-        'horizontal_align': ({'edge_ref_px': round(float(edgeRef), 2)}
-                             if align and edgeRef is not None else None),
+                        if (align or hz) else None),
+        'horizontal_align': {'edge_ref_px': round(float(edgeRef), 2)} if hz else None,
         'frame_range': ({'from': frameRange[0], 'to': frameRange[1], 'frames': frameRange[2]}
                         if frameRange is not None else None),
         'processed': done - len(errors),
@@ -467,7 +475,7 @@ if __name__ == '__main__':
 
     stored = loadAlign(inputDir)
     yn = 'y' if (stored['vertical'] if stored['vertical'] is not None else alignSprocket) else 'n'
-    ans = input("Align to sprocket hole? (y/n) ['%s'] > " % yn).strip().lower() or yn
+    ans = input("Align vertically to sprocket hole? (y/n) ['%s'] > " % yn).strip().lower() or yn
     if ans not in ('y', 'n'):
         print("***** please answer y or n. Exiting!")
         exit(0)
@@ -488,7 +496,7 @@ if __name__ == '__main__':
         exit(0)
 
     roi = stored['roi']
-    horizontal = align and stored['horizontal']
+    horizontal = stored['horizontal']
     edgeRef = stored['edge_ref'] if horizontal else None
     if horizontal and edgeRef is None:
         print('.... measuring the normal position of the hole edge')

@@ -8,11 +8,13 @@ cineAlign brings the frames of a film scan into line in two respects: where the 
 
 A film scanner rarely places two frames at exactly the same position. What stays fixed relative to the picture is the sprocket hole, and on an overscanned frame it is in the scan. cineAlign finds the hole in every frame and shifts the frame so that the hole always sits at the same place.
 
-The vertical position comes from the centre of the hole. Sideways the hole is only an approximation: in Super 8 the lateral reference is the film edge opposite the perforation, and hardly any scanner records that edge. The hole is what a scan has to offer, so the horizontal alignment uses the edge of the hole that faces the picture. It is optional and switched off by default; it helps where the film moves sideways in the scan, for instance at rough splices, where it is pushed aside in the gate for a few frames.
+The vertical position comes from the centre of the hole. Sideways the hole is only an approximation: in Super 8 the lateral reference is the film edge opposite the perforation, and hardly any scanner records that edge. The hole is what a scan has to offer, so the horizontal alignment uses the edge of the hole that faces the picture. It is optional and switched off by default, and the two directions are switched independently. It helps where the film moves sideways in the scan, for instance at rough splices, where it is pushed aside in the gate for a few frames.
 
 Frames are moved by whole pixels and are not resampled.
 
 Detection calibrates itself on every frame: the open hole is the brightest thing in the search area, and its own brightness is the reference. Exposure and tone mapping of the scan therefore do not matter. A fibre lying across the hole is bridged, and where the upper edge of a hole is torn, the centre is taken from the lower edge.
+
+> **Note:** cineAlign needs reversal film. The hole is found because the film around it is dark; on negative film, or on any film with a clear base in the perforation band, the method does not work.
 
 In the same pass the primary colour correction is applied, if LUTs are available: a LUT for the whole film, and separate LUTs for the parts of it that need a different correction. Otherwise only the registration to the sprocket hole is performed.
 
@@ -27,13 +29,13 @@ cineAlign is one of the cineTools, next to [cineFlow](https://github.com/cpixip/
 
 ## What goes in, what comes out
 
-Input is a folder of frames — TIFF, PNG or JPG, 8 or 16 bit — either directly in the folder or in one level of scene folders, which are mirrored in the output.
+Input is a folder of frames scanned from reversal film — TIFF, PNG or JPG, 8 or 16 bit — either directly in the folder or in one level of scene folders, which are mirrored in the output.
 
 The frame number is read from the digits at the end of the file name, and the output carries it: `Scene00000955.tif` becomes `SPR_00000955.tif`. Output is always TIFF, at the bit depth of the input.
 
 Two small files are written besides the frames:
 
-- `_cineAlign/cineAlign.json` in the input folder — the search area and the two alignment switches. They belong to the material, since they depend on how it was scanned.
+- `_cineAlign/cineAlign.json` in the input folder — the search area and the two alignment switches (vertical, horizontal). They belong to the material, since they depend on how it was scanned.
 - `cineAlign_run.json` in the output folder — what the run did: search area, alignment, LUTs, number of frames.
 
 ## Colour
@@ -82,7 +84,7 @@ The line at the bottom of the window lists the keys.
 
 ## Status
 
-This is version 2.4: working software that one person uses on his own films, published in the hope that it is useful to others.
+This is version 2.5: working software that one person uses on his own films, published in the hope that it is useful to others.
 
 **No support is promised.** Bug reports are welcome and will be read.
 

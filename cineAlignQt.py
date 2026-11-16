@@ -25,12 +25,12 @@ import numpy as np
 
 try:
     from PyQt5.QtCore import Qt, QTimer, QPoint, QPointF, QRectF, QThread, QEvent, pyqtSignal
-    from PyQt5.QtGui import QImage, QPixmap, QPainter, QPalette, QColor, QPen
+    from PyQt5.QtGui import QCursor, QImage, QPixmap, QPainter, QPalette, QColor, QPen
     from PyQt5.QtWidgets import (
         QApplication, QMainWindow, QWidget, QLabel, QLineEdit, QPushButton,
         QVBoxLayout, QHBoxLayout, QGridLayout, QRadioButton, QButtonGroup,
         QDoubleSpinBox, QSlider, QFileDialog, QGroupBox, QCheckBox,
-        QSizePolicy, QMessageBox, QProgressBar, QPlainTextEdit)
+        QSizePolicy, QMessageBox, QProgressBar, QPlainTextEdit, QScrollArea, QFrame)
 except ImportError:
     sys.exit("\ncineAlignQt: PyQt5 is not installed.\n         pip install PyQt5\n")
 
@@ -43,7 +43,8 @@ from getIndex import getIndex
 import inspect
 _old = []
 if not all(hasattr(ca, n) for n in ("loadRoi", "saveRoi", "summaryLines", "progressLine", "ROI_DEFAULT",
-                                        "SHIFT_LOG", "IGNORED_DIRS", "loadAlign", "measureEdgeRef", "EDGE_METHOD")):
+                                        "SHIFT_LOG", "IGNORED_DIRS", "loadAlign", "measureEdgeRef", "EDGE_METHOD")) \
+        or tuple(int(v) for v in str(getattr(ca, "VERSION", "0")).split(".")[:2]) < (2, 5):
     _old.append("cineAlign.py (the version that came with cineAlignQt is needed, found %s)"
                 % getattr(ca, "VERSION", "?"))
 if not all(n in inspect.signature(sprocketDetectFast).parameters for n in ("info", "hRef", "hBand")):
@@ -300,11 +301,12 @@ class Canvas(QWidget):
                     for cc, w in ((QColor(0, 0, 0), 3.0), (c, 1.4)):
                         p.setPen(QPen(cc, w))
                         p.drawLine(QPointF(sx, sya), QPointF(sx, syb))
-        if self.show_center:
-            _x, sy = self.to_screen(0, H // 2)
-            sx0, _y = self.to_screen(0, 0)
+        if self.show_center or self.href is not None:
             p.setPen(QPen(QColor(255, 255, 255), 1.0, Qt.DashLine))
-            p.drawLine(QPointF(sx0, sy), QPointF(sx0 + max(60.0, 0.12 * W * s), sy))
+            if self.show_center:
+                _x, sy = self.to_screen(0, H // 2)
+                sx0, _y = self.to_screen(0, 0)
+                p.drawLine(QPointF(sx0, sy), QPointF(sx0 + max(60.0, 0.12 * W * s), sy))
             if self.href is not None:
                 if self.show_roi and d.get("found"):
                     ra, rb = d["lo"] - 0.03 * H, d["hi"] + 0.03 * H
@@ -391,7 +393,7 @@ class ShiftPlot(QWidget):
         if self.rng is not None:
             xa, xb = self._x(self.rng[0]), self._x(self.rng[1])
             p.fillRect(QRectF(xa, 0, max(2.0, xb - xa), h), QColor(40, 52, 68))
-        vals = np.array([v for v, r, _hx, _hr in self.data.values() if r in OK_ROUTES]
+        vals = np.array([v for v, r, _hx, _hr in self.data.values() if r in OK_ROUTES and v is not None]
                         + [hx for _v, _r, hx, hr in self.data.values() if hr == "found"], float)
         if len(vals):
             lo, hi = np.percentile(vals, [1, 99])
@@ -417,8 +419,9 @@ class ShiftPlot(QWidget):
                 p.setBrush(COL_HBAD)
                 p.drawRect(QRectF(x - 0.5, 0, 1, 7))
             if r in cols:
-                p.setBrush(cols[r])
-                p.drawRect(QRectF(x - size / 2, y(v) - size / 2, size, size))
+                if v is not None:
+                    p.setBrush(cols[r])
+                    p.drawRect(QRectF(x - size / 2, y(v) - size / 2, size, size))
             else:
                 p.setBrush(QColor(235, 70, 70))
                 p.drawRect(QRectF(x - 0.5, h - 7, 1, 7))
@@ -476,7 +479,8 @@ class ShiftZoom(QWidget):
         m = 4
         x = lambda i: m + (w - 2 * m) * ((i - idx + half) / (2.0 * half))
         pts = [(i, data[i]) for i in range(max(0, idx - half), min(n - 1, idx + half) + 1) if i in data]
-        vals = [d[0] for _i, d in pts if d[1] in OK_ROUTES] + [d[2] for _i, d in pts if d[3] == "found"]
+        vals = ([d[0] for _i, d in pts if d[1] in OK_ROUTES and d[0] is not None]
+                + [d[2] for _i, d in pts if d[3] == "found"])
         if vals:
             lo, hi = min(vals), max(vals)
         else:
@@ -512,6 +516,9 @@ class ShiftZoom(QWidget):
                 p.drawLine(QPointF(x(i), h - 8), QPointF(x(i), h - 1))
                 prev = None
                 continue
+            if v is None:
+                prev = None
+                continue
             if prev is not None and prev[0] == i - 1:
                 torn = r == "lower edge" or prev[2] == "lower edge"
                 p.setPen(QPen(COL_TORN if torn else COL_CENTER, 1.2))
@@ -525,7 +532,7 @@ class ShiftZoom(QWidget):
         p.drawText(QRectF(w - 62, 1, 58, 13), Qt.AlignRight | Qt.AlignTop, f"\u00b1{half} fr.")
         cur = data.get(idx)
         right = w - m
-        if cur is not None and cur[1] in OK_ROUTES:
+        if cur is not None and cur[1] in OK_ROUTES and cur[0] is not None:
             t = f"{cur[0]:+d}"
             tw = p.fontMetrics().horizontalAdvance(t)
             p.setPen(COL_EDGE)
@@ -750,16 +757,19 @@ class Main(QMainWindow):
 
         g = QGroupBox("Run")
         gl = QVBoxLayout(g)
-        self.cb_align = QCheckBox("align to sprocket hole")
-        self.cb_align.setToolTip("Off for material from other scanners: then only the LUTs are applied.\n"
-                                 "Both switches and the search area are stored with the material\n"
+        self.cb_align = QCheckBox("align vertically")
+        self.cb_align.setToolTip("Shift every frame so that the centre of the sprocket hole sits at the\n"
+                                 "centre of the image. The two alignments are independent; with both off,\n"
+                                 "only the LUTs are applied.\n"
+                                 "Both switches stay as they are when other material is loaded, and are\n"
+                                 "remembered between sessions. The search area is stored with the material\n"
                                  "(_cineAlign/cineAlign.json in the input folder).")
         self.cb_align.toggled.connect(self._align_toggled)
         gl.addWidget(self.cb_align)
         self.cb_horiz = QCheckBox("align horizontally")
         self.cb_horiz.setToolTip(
-            "Also align sideways, to the right edge of the sprocket hole (the one towards the\n"
-            "picture). The search area has to lie inside the hole, its right border left of\n"
+            "Align sideways, to the right edge of the sprocket hole (the one towards the\n"
+            "picture) -- with or without the vertical alignment. The search area has to lie inside the hole, its right border left of\n"
             "that edge; the edge is searched up to two widths of the search area further right,\n"
             "in a band around the hole centre 1.5 widths high (clear of the rounded corners).\n"
             "Reference is the normal position of the edge, measured once on 50 frames from the\n"
@@ -786,8 +796,14 @@ class Main(QMainWindow):
         self.log.setStyleSheet("font-family: Consolas, 'DejaVu Sans Mono', monospace;")
         side.addWidget(self.log, 1)
 
-        w = QWidget(); w.setLayout(side); w.setFixedWidth(340)
-        mid.addWidget(w)
+        w = QWidget(); w.setLayout(side)
+        side.setContentsMargins(0, 0, 0, 0)
+        self.log.setMinimumHeight(90)
+        sc = QScrollArea(); sc.setWidget(w); sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.NoFrame)
+        sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sc.setFixedWidth(340)
+        mid.addWidget(sc)
         v.addLayout(mid, 1)
 
         nav = QHBoxLayout()
@@ -947,15 +963,7 @@ class Main(QMainWindow):
             self.href = st["edge_ref"]
             self._set_roi(st["roi"] or ca.ROI_DEFAULT, save=False, redraw=False)
             self._ref_roi = self.roi if self.href is not None else None
-            self.cb_horiz.blockSignals(True)
-            self.cb_horiz.setChecked(st["horizontal"])
-            self.cb_horiz.blockSignals(False)
-            if st["vertical"] is not None:
-                self.cb_align.blockSignals(True)
-                self.cb_align.setChecked(st["vertical"])
-                self.cb_align.blockSignals(False)
-                self.settings["align"] = st["vertical"]
-                self._roi_widgets()
+            self._roi_widgets()
         self.lbl_in.setText(path)
         self.lbl_in.setStyleSheet("")
         self.settings["input"] = path
@@ -1030,11 +1038,13 @@ class Main(QMainWindow):
             img = np.stack([img] * 3, -1)
         H, W = img.shape[:2]
         align = self.cb_align.isChecked()
+        search = align or self._horiz_on()
         det, shift = {}, (0, 0)
         hz = self._href_now()
-        if align:
-            shift = sprocketDetectFast(img, roi=self.roi, horizontal=hz is not None, hRef=hz, info=det)
-            self.plot.data[self.idx] = (int(shift[1]), det.get("route", "none"),
+        if search:
+            sx, sy = sprocketDetectFast(img, roi=self.roi, horizontal=hz is not None, hRef=hz, info=det)
+            shift = (sx, sy if align else 0)
+            self.plot.data[self.idx] = (int(sy) if align else None, det.get("route", "none"),
                                         int(shift[0]) if hz is not None else None,
                                         det.get("hroute", "none") if hz is not None else None)
         result = self._result_view()
@@ -1045,21 +1055,21 @@ class Main(QMainWindow):
                     shown = lut.apply(img)
                 except Exception as e:
                     self.status.showMessage(f"LUT: {e}")
-            if align:
+            if search:
                 shown = shiftImg(shown, shift[0], shift[1])
         s = self.canvas.scale() if self.canvas._size == (W, H) else min(
             self.canvas.width() / W, self.canvas.height() / H)
         step = 4 if s <= 0.25 else 2 if s <= 0.5 else 1
         disp = self._table(shown.dtype)[shown[::step, ::step, :3]]
         self.canvas.roi = self.roi
-        self.canvas.show_roi = align and not result
+        self.canvas.show_roi = search and not result
         self.canvas.roi_edit = not self._running()
-        self.canvas.det = det if align else None
+        self.canvas.det = det if search else None
         self.canvas.href = hz
         self.canvas.show_center = align
         self._disp_step = step
         self.canvas.set_image(disp, (W, H))
-        self._det_text(det, shift, H, align, hz)
+        self._det_text(det, shift, H, align, hz, search)
         n = len(self.tasks)
         scene = os.path.basename(os.path.dirname(path)) if self.mode == "mirror" else ""
         self.lbl_frame.setText(f"frame {getIndex(path)}  ·  {self.idx + 1} / {n}"
@@ -1072,8 +1082,8 @@ class Main(QMainWindow):
             self.status.showMessage(os.path.basename(path) + ("" if lut is None else
                                     f"  ·  LUT {os.path.basename(lut.path)}"))
 
-    def _det_text(self, d, shift, H, align, hz):
-        if not align:
+    def _det_text(self, d, shift, H, align, hz, search):
+        if not search:
             self.lbl_det.setText("Alignment is off -- no search.")
             self.lbl_det.setStyleSheet("color: #8a9099")
             return
@@ -1087,7 +1097,8 @@ class Main(QMainWindow):
         self.lbl_det.setText(
             f"Hole rows {d['lo']}–{d['hi']} ({d['size']} px, nominal {d['nominal']})"
             f"{' -- too large, centre from the lower edge' if torn else ''}\n"
-            f"centre {d['center']}, image centre {H // 2}: shift {shift[1]:+d} px"
+            + (f"centre {d['center']}, image centre {H // 2}: shift {shift[1]:+d} px" if align
+               else f"centre {d['center']} -- no vertical shift (switched off)")
             + self._h_text(d, shift, hz))
         self.lbl_det.setStyleSheet("color: #ff9628" if torn else "")
 
@@ -1149,7 +1160,7 @@ class Main(QMainWindow):
             self._ref_check()
 
     def _horiz_on(self):
-        return self.cb_align.isChecked() and self.cb_horiz.isChecked()
+        return self.cb_horiz.isChecked()
 
     def _href_now(self):
         return self.href if self._horiz_on() else None
@@ -1162,7 +1173,9 @@ class Main(QMainWindow):
             self.status.showMessage(f"search area not saved: {e}")
 
     def _horiz_toggled(self, on):
+        self.settings["horizontal"] = bool(on)
         self.plot.data = {}
+        self._roi_widgets()
         if self.input:
             self._save_align()
         if self.tasks:
@@ -1219,18 +1232,17 @@ class Main(QMainWindow):
             self.btn_run.setEnabled(True)
 
     def _roi_widgets(self):
-        on = self.cb_align.isChecked() and not self._running()
-        for wdg in self.sp_roi + [self.btn_roi_def, self.cb_horiz]:
+        on = (self.cb_align.isChecked() or self._horiz_on()) and not self._running()
+        for wdg in self.sp_roi + [self.btn_roi_def]:
             wdg.setEnabled(on)
 
     def _align_toggled(self, on):
         self.settings["align"] = bool(on)
         if self.input:
             self._save_align()
-        if not on:
-            self.plot.data = {}
-            self.plot.update()
-            self.zoom.update()
+        self.plot.data = {}
+        self.plot.update()
+        self.zoom.update()
         self._roi_widgets()
         if self.tasks:
             self._show_plan()
@@ -1503,7 +1515,7 @@ class Main(QMainWindow):
         self.btn_run.setText("Cancel  (Esc)")
         for wdg in self._edit_widgets:
             wdg.setEnabled(False)
-        ca.SHIFT_LOG = {} if align else None
+        ca.SHIFT_LOG = {} if (align or hz is not None) else None
         self._worker = RunWorker(todo)
         self._worker.progress.connect(self._run_progress)
         self._worker.finished_run.connect(self._run_done)
@@ -1590,6 +1602,7 @@ class Main(QMainWindow):
         s = self.settings
         s["output"] = self.ed_out.text().strip()
         s["align"] = self.cb_align.isChecked()
+        s["horizontal"] = self.cb_horiz.isChecked()
         s["shadows"] = self.sl_shadow.value()
         s.setdefault("play_fps", PLAY_FPS)
         try:
@@ -1604,6 +1617,9 @@ class Main(QMainWindow):
         self.cb_align.blockSignals(True)
         self.cb_align.setChecked(bool(s.get("align", ca.alignSprocket)))
         self.cb_align.blockSignals(False)
+        self.cb_horiz.blockSignals(True)
+        self.cb_horiz.setChecked(bool(s.get("horizontal", False)))
+        self.cb_horiz.blockSignals(False)
         self.sl_shadow.setValue(int(s.get("shadows", 0)))
         self._set_roi(self.roi, save=False, redraw=False)
         self._align_toggled(self.cb_align.isChecked())
@@ -1666,6 +1682,16 @@ def _scale_font(app):
     f.setPointSize(12 if h >= 2000 else (10 if h >= 1400 else 9))
     app.setFont(f)
 
+def _place(w, app):
+    scr = app.screenAt(QCursor.pos()) or app.primaryScreen()
+    if scr is None:
+        w.resize(1500, 950)
+        return
+    ag = scr.availableGeometry()
+    w.resize(min(1500, ag.width() - 20), min(950, ag.height() - 50))
+    w.move(ag.x() + max(0, (ag.width() - w.width()) // 2),
+           ag.y() + max(0, (ag.height() - w.height() - 40) // 2))
+
 def main():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
@@ -1673,7 +1699,7 @@ def main():
     _scale_font(app)
     _apply_dark(app)
     w = Main()
-    w.resize(1500, 950)
+    _place(w, app)
     w.show()
     return app.exec_()
 
