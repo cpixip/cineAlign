@@ -18,7 +18,7 @@ Detection calibrates itself on every frame: the open hole is the brightest thing
 
 In the same pass the primary colour correction is applied, if LUTs are available: a LUT for the whole film, and separate LUTs for the parts of it that need a different correction. Otherwise only the registration to the sprocket hole is performed.
 
-cineAlign is one of the cineTools, next to [cineFlow](https://github.com/cpixip/cineFlow).
+cineAlign is one of the cineTools, next to [cineFlow](https://github.com/cpixip/cineFlow) and [cineColor](https://github.com/cpixip/cineColor).
 
 ## The two programs
 
@@ -42,7 +42,7 @@ Two small files are written besides the frames:
 
 While writing, cineAlign applies a LUT if it finds one next to the material: `csample.cube` in the input folder or in its sub-folder `_LUT`. A file named `csample_<first>-<last>.cube` replaces it for the frames in that range.
 
-These files are what cineColor writes — an upcoming member of the cineTools for the primary colour correction of a scan. Until then, any 1D LUT in `.cube` format will do:
+These files are what [cineColor](https://github.com/cpixip/cineColor) writes. Any other 1D LUT in `.cube` format will do as well:
 
 ```
 LUT_1D_SIZE 1024
