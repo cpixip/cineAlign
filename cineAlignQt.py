@@ -43,8 +43,9 @@ from getIndex import getIndex
 import inspect
 _old = []
 if not all(hasattr(ca, n) for n in ("loadRoi", "saveRoi", "summaryLines", "progressLine", "ROI_DEFAULT",
-                                        "SHIFT_LOG", "IGNORED_DIRS", "loadAlign", "measureEdgeRef", "EDGE_METHOD")) \
-        or tuple(int(v) for v in str(getattr(ca, "VERSION", "0")).split(".")[:2]) < (2, 5):
+                                        "SHIFT_LOG", "PREVIEW", "IGNORED_DIRS", "loadAlign", "measureEdgeRef",
+                                        "EDGE_METHOD")) \
+        or tuple(int(v) for v in str(getattr(ca, "VERSION", "0")).split(".")[:2]) < (2, 6):
     _old.append("cineAlign.py (the version that came with cineAlignQt is needed, found %s)"
                 % getattr(ca, "VERSION", "?"))
 if not all(n in inspect.signature(sprocketDetectFast).parameters for n in ("info", "hRef", "hBand")):
@@ -61,6 +62,8 @@ CACHE_N = 12
 SHADOW_MAX = 4.0
 ROI_MIN_W, ROI_MIN_H = 0.004, 0.05
 GRAB = 7
+RUN_TICK_MS = 500
+PREVIEW_EVERY = 2
 
 COL_ROI = QColor(60, 200, 230)
 COL_EDGE = QColor(255, 220, 0)
@@ -112,11 +115,14 @@ class Canvas(QWidget):
         self.href = None
         self.message = "drop an image folder here (flat, or one level of scene folders)"
         self._drag = None
+        self.flip = False
 
     def set_image(self, rgb8, size):
         if rgb8 is None:
             self._pix, self._size = None, None
         else:
+            if self.flip:
+                rgb8 = rgb8[::-1]
             h, w = rgb8.shape[:2]
             buf = np.ascontiguousarray(rgb8)
             self._pix = QPixmap.fromImage(QImage(buf.data, w, h, 3 * w, QImage.Format_RGB888))
@@ -140,16 +146,18 @@ class Canvas(QWidget):
 
     def to_image(self, sx, sy):
         x0, y0, s = self.origin()
-        return (sx - x0) / s, (sy - y0) / s
+        iy = (sy - y0) / s
+        return (sx - x0) / s, (self._size[1] - iy if self.flip else iy)
 
     def to_screen(self, ix, iy):
         x0, y0, s = self.origin()
-        return x0 + ix * s, y0 + iy * s
+        return x0 + ix * s, y0 + (self._size[1] - iy if self.flip else iy) * s
 
     def zoom_at(self, factor, sx, sy):
         if self._size is None:
             return
-        p = self.to_image(sx, sy)
+        x0, y0, s0 = self.origin()
+        p = ((sx - x0) / s0, (sy - y0) / s0)
         z = min(self.ZOOM_MAX, self.scale() * factor)
         if z <= self.fit_scale() * 1.001:
             self.z, self.pan = None, QPoint(0, 0)
@@ -164,9 +172,9 @@ class Canvas(QWidget):
     def _roi_screen(self):
         W, H = self._size
         l, r, t, b = self.roi
-        x0, y0 = self.to_screen(l * W, t * H)
-        x1, y1 = self.to_screen(r * W, b * H)
-        return x0, y0, x1, y1
+        x0, ya = self.to_screen(l * W, t * H)
+        x1, yb = self.to_screen(r * W, b * H)
+        return x0, min(ya, yb), x1, max(ya, yb)
 
     def _edge_at(self, pos):
         if self._size is None or self.roi is None or not (self.roi_edit and self.show_roi):
@@ -180,7 +188,7 @@ class Canvas(QWidget):
                 if d <= GRAB and (best is None or d < best[0]):
                     best = (d, k)
         if x0 - GRAB <= x <= x1 + GRAB:
-            for k, ey in ((2, y0), (3, y1)):
+            for k, ey in (((3, y0), (2, y1)) if self.flip else ((2, y0), (3, y1))):
                 d = abs(y - ey)
                 if d <= GRAB and (best is None or d < best[0]):
                     best = (d, k)
@@ -361,6 +369,45 @@ class NavBar(QWidget):
         if ev.buttons() & Qt.LeftButton:
             self._seek(ev)
 
+ROUTES = (None, "clean", "lower edge", "too small", "none")
+HROUTES = (None, "found", "none", "discarded")
+
+class ShiftData:
+
+    def __init__(self, n=0):
+        self.reset(n)
+
+    def reset(self, n=None):
+        if n is not None:
+            self.n = int(n)
+        self.y = np.full(self.n, np.nan)
+        self.r = np.zeros(self.n, np.int8)
+        self.x = np.full(self.n, np.nan)
+        self.h = np.zeros(self.n, np.int8)
+
+    def __setitem__(self, i, v):
+        sy, route, sx, hroute = v
+        self.y[i] = np.nan if sy is None else sy
+        self.r[i] = ROUTES.index(route) if route in ROUTES[1:] else ROUTES.index("none")
+        self.x[i] = np.nan if sx is None else sx
+        self.h[i] = HROUTES.index(hroute) if hroute in HROUTES[1:] else 0
+
+    def __contains__(self, i):
+        return 0 <= i < self.n and self.r[i] != 0
+
+    def __getitem__(self, i):
+        if i not in self:
+            raise KeyError(i)
+        y, x = self.y[i], self.x[i]
+        return (None if np.isnan(y) else int(y), ROUTES[self.r[i]],
+                None if np.isnan(x) else int(x), HROUTES[self.h[i]])
+
+    def get(self, i, default=None):
+        return self[i] if i in self else default
+
+    def __len__(self):
+        return int(np.count_nonzero(self.r))
+
 class ShiftPlot(QWidget):
     seek = pyqtSignal(int)
     M = 6
@@ -371,7 +418,7 @@ class ShiftPlot(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.n, self.idx = 0, 0
         self.rng = None
-        self.data = {}
+        self.data = ShiftData()
         self.setToolTip("Vertical shift found by the detection [px], over the whole film -- filled\n"
                         "in as frames are looked at and as the run proceeds.\n"
                         "Green: clean hole. Orange: hole too large or torn (centre from the lower\n"
@@ -393,8 +440,13 @@ class ShiftPlot(QWidget):
         if self.rng is not None:
             xa, xb = self._x(self.rng[0]), self._x(self.rng[1])
             p.fillRect(QRectF(xa, 0, max(2.0, xb - xa), h), QColor(40, 52, 68))
-        vals = np.array([v for v, r, _hx, _hr in self.data.values() if r in OK_ROUTES and v is not None]
-                        + [hx for _v, _r, hx, hr in self.data.values() if hr == "found"], float)
+        d = self.data
+        if d.n != self.n:
+            d.reset(self.n)
+        known = d.r > 0
+        okv = ((d.r == 1) | (d.r == 2)) & ~np.isnan(d.y)
+        okh = d.h == 1
+        vals = np.concatenate((d.y[okv], d.x[okh]))
         if len(vals):
             lo, hi = np.percentile(vals, [1, 99])
         else:
@@ -407,24 +459,34 @@ class ShiftPlot(QWidget):
         if lo < 0 < hi:
             p.setPen(QPen(QColor(90, 94, 102), 1))
             p.drawLine(QPointF(self.M, y(0)), QPointF(w - self.M, y(0)))
-        size = 1.0 if self.n > (w - 2 * self.M) else 2.0
-        cols = {"clean": QColor(90, 220, 90), "lower edge": QColor(255, 150, 40)}
-        p.setPen(Qt.NoPen)
-        for i, (v, r, hx, hr) in self.data.items():
-            x = self._x(i)
-            if hr == "found":
-                p.setBrush(COL_H)
-                p.drawRect(QRectF(x - size / 2, y(hx) - size / 2, size, size))
-            elif hr is not None:
-                p.setBrush(COL_HBAD)
-                p.drawRect(QRectF(x - 0.5, 0, 1, 7))
-            if r in cols:
-                if v is not None:
-                    p.setBrush(cols[r])
-                    p.drawRect(QRectF(x - size / 2, y(v) - size / 2, size, size))
-            else:
-                p.setBrush(QColor(235, 70, 70))
-                p.drawRect(QRectF(x - 0.5, h - 7, 1, 7))
+        size = 1 if self.n > (w - 2 * self.M) else 2
+        buf = np.zeros((h, w, 4), np.uint8)
+        xi = np.clip(np.round(self.M + (w - 2 * self.M) * np.arange(self.n) / max(1, self.n - 1)),
+                     0, w - 1).astype(np.intp)
+
+        def rgba(c):
+            return (c.red(), c.green(), c.blue(), 255)
+
+        def dots(mask, v, col):
+            if not mask.any():
+                return
+            yy = np.clip(h - pad - (v[mask] - lo) / (hi - lo) * (h - 2 * pad), pad, h - pad)
+            yy = np.clip(np.round(yy), 0, h - 1).astype(np.intp)
+            xx = xi[mask]
+            for ox, oy in ((0, 0), (-1, 0), (0, -1), (-1, -1))[:1 if size == 1 else 4]:
+                buf[np.clip(yy + oy, 0, h - 1), np.clip(xx + ox, 0, w - 1)] = col
+
+        def ticks(mask, y0, y1, col):
+            if mask.any():
+                buf[y0:y1, xi[mask]] = col
+
+        dots(okh, d.x, rgba(COL_H))
+        ticks((d.h == 2) | (d.h == 3), 0, 7, rgba(COL_HBAD))
+        dots(okv & (d.r == 1), d.y, (90, 220, 90, 255))
+        dots(okv & (d.r == 2), d.y, (255, 150, 40, 255))
+        ticks(known & (d.r > 2), h - 7, h, (235, 70, 70, 255))
+        img = QImage(buf.data, w, h, 4 * w, QImage.Format_RGBA8888)
+        p.drawImage(0, 0, img)
         p.setPen(QPen(QColor(255, 220, 0), 1))
         x = self._x(self.idx)
         p.drawLine(QPointF(x, 0), QPointF(x, h))
@@ -432,7 +494,7 @@ class ShiftPlot(QWidget):
         f = p.font(); f.setPointSizeF(max(6.5, f.pointSizeF() * 0.8)); p.setFont(f)
         p.drawText(QRectF(self.M + 2, 1, 120, 14), Qt.AlignLeft | Qt.AlignTop, f"{hi:+.0f} px")
         p.drawText(QRectF(self.M + 2, h - 15, 120, 14), Qt.AlignLeft | Qt.AlignBottom, f"{lo:+.0f} px")
-        if not self.data:
+        if not known.any():
             p.drawText(self.rect(), Qt.AlignCenter, "shift per frame -- appears as frames are looked at or processed")
 
     def _seek(self, ev):
@@ -640,6 +702,9 @@ class Main(QMainWindow):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._tick)
+        self._run_timer = QTimer(self)
+        self._run_timer.timeout.connect(self._run_tick)
+        self._run_ticks = 0
         self._apply_settings()
 
     def _build(self):
@@ -725,6 +790,13 @@ class Main(QMainWindow):
         self.view_group.button(0).setChecked(True)
         self.view_group.buttonClicked.connect(lambda _b: self._redraw())
         row.addStretch(1)
+        self.cb_flip = QCheckBox("Flip")
+        self.cb_flip.setFocusPolicy(Qt.NoFocus)
+        self.cb_flip.setToolTip("Display only: show the frame upside down (y), for scanners that deliver\n"
+                                "the frames that way. Detection, search area and output are not affected.")
+        self.cb_flip.toggled.connect(self._flip_toggled)
+        row.addWidget(self.cb_flip)
+        row.addSpacing(12)
         gl.addLayout(row)
         row = QHBoxLayout()
         self.lbl_shadow = QLabel("Shadows +0.0 EV")
@@ -838,7 +910,7 @@ class Main(QMainWindow):
 
         hint = QLabel("←/→ frame · Shift ±10 · Ctrl ±100 · Home/End "
                       "· Up/Down: scene · j/k/l: play back / stop / play (again: 2×, 4×) "
-                      "· space: play / pause · i/o: range start / end · 1 / 2: Original / Result (v: switch) "
+                      "· space: play / pause · i/o: range start / end · 1 / 2: Original / Result (v: switch) · y: flip "
                       "· wheel: zoom · double-click: fit / 1:1 · Esc: cancel run")
         hint.setStyleSheet("color: #8a9099")
         hint.setWordWrap(True)
@@ -970,7 +1042,7 @@ class Main(QMainWindow):
         self._path_idx = {os.path.normcase(os.path.abspath(t[0])): i for i, t in enumerate(tasks)}
         self.plot.n = len(tasks)
         if not same:
-            self.plot.data = {}
+            self.plot.data.reset(len(tasks))
         self.bar.n = len(tasks)
         self.bar.cuts = [i for i in range(1, len(tasks))
                          if os.path.dirname(tasks[i][0]) != os.path.dirname(tasks[i - 1][0])]
@@ -1023,6 +1095,11 @@ class Main(QMainWindow):
 
     def _result_view(self):
         return self.view_group.checkedId() == 1
+
+    def _flip_toggled(self, on):
+        self.canvas.flip = bool(on)
+        self.settings["flip"] = bool(on)
+        self._redraw()
 
     def _redraw(self, *_):
         if not self.tasks:
@@ -1143,7 +1220,7 @@ class Main(QMainWindow):
     def _set_roi(self, roi, save, redraw=True):
         new = tuple(round(float(x), 4) for x in roi)
         if new != self.roi:
-            self.plot.data = {}
+            self.plot.data.reset()
         self.roi = new
         for sp, x in zip(self.sp_roi, self.roi):
             sp.blockSignals(True)
@@ -1174,7 +1251,7 @@ class Main(QMainWindow):
 
     def _horiz_toggled(self, on):
         self.settings["horizontal"] = bool(on)
-        self.plot.data = {}
+        self.plot.data.reset()
         self._roi_widgets()
         if self.input:
             self._save_align()
@@ -1210,7 +1287,7 @@ class Main(QMainWindow):
             return
         ref, found, tried = res
         self.href, self._ref_roi = ref, (self.roi if ref is not None else None)
-        self.plot.data = {}
+        self.plot.data.reset()
         if self.input:
             self._save_align()
         self._show_plan()
@@ -1240,7 +1317,7 @@ class Main(QMainWindow):
         self.settings["align"] = bool(on)
         if self.input:
             self._save_align()
-        self.plot.data = {}
+        self.plot.data.reset()
         self.plot.update()
         self.zoom.update()
         self._roi_widgets()
@@ -1403,6 +1480,8 @@ class Main(QMainWindow):
         elif k == Qt.Key_V:
             self.view_group.button(0 if self._result_view() else 1).setChecked(True)
             self._redraw()
+        elif k == Qt.Key_Y:
+            self.cb_flip.toggle()
         elif k in (Qt.Key_1, Qt.Key_2):
             self.view_group.button(0 if k == Qt.Key_1 else 1).setChecked(True)
             self._redraw()
@@ -1516,12 +1595,15 @@ class Main(QMainWindow):
         for wdg in self._edit_widgets:
             wdg.setEnabled(False)
         ca.SHIFT_LOG = {} if (align or hz is not None) else None
+        ca.PREVIEW = {}
+        self._run_ticks = 0
         self._worker = RunWorker(todo)
         self._worker.progress.connect(self._run_progress)
         self._worker.finished_run.connect(self._run_done)
         self.status.showMessage(ca.progressLine(0, len(todo), 0))
         self.canvas.roi_edit = False
         self._worker.start()
+        self._run_timer.start(RUN_TICK_MS)
 
     def _take_shifts(self):
         log = ca.SHIFT_LOG
@@ -1542,9 +1624,48 @@ class Main(QMainWindow):
         self.plot.update()
         self.zoom.update()
 
+    def _run_tick(self):
+        self._take_shifts()
+        self._run_ticks += 1
+        if self._run_ticks % PREVIEW_EVERY == 0:
+            self._show_preview()
+
+    def _show_preview(self):
+        pv = ca.PREVIEW
+        item = pv.pop("last", None) if pv else None
+        if item is None:
+            return
+        path, img = item
+        i = self._path_idx.get(os.path.normcase(os.path.abspath(path)))
+        if i is None:
+            return
+        H, W = img.shape[:2]
+        s = self.canvas.scale() if self.canvas._size == (W, H) else min(
+            self.canvas.width() / W, self.canvas.height() / H)
+        step = 4 if s <= 0.25 else 2 if s <= 0.5 else 1
+        small = img[::step, ::step]
+        if small.ndim == 2:
+            small = np.stack([small] * 3, -1)
+        disp = self._table(small.dtype)[small[..., :3]]
+        info = self._run_info
+        self.idx = i
+        self.canvas.roi = self.roi
+        self.canvas.show_roi = False
+        self.canvas.det = None
+        self.canvas.href = info["href"]
+        self.canvas.show_center = info["align"]
+        self._disp_step = step
+        self.canvas.set_image(disp, (W, H))
+        scene = os.path.basename(os.path.dirname(path)) if self.mode == "mirror" else ""
+        self.lbl_frame.setText(f"frame {getIndex(path)}  ·  {i + 1} / {len(self.tasks)}  ·  written"
+                               + (f"  ·  {scene}" if scene else ""))
+        self.bar.idx = self.plot.idx = i
+        self.bar.update()
+        self.plot.update()
+        self.zoom.update()
+
     def _run_progress(self, done, total, seconds):
         self.progress.setValue(done)
-        self._take_shifts()
         if seconds > 0:
             line = ca.progressLine(done, total, seconds)
             self.status.showMessage(line)
@@ -1554,8 +1675,10 @@ class Main(QMainWindow):
         info = self._run_info
         self._worker.wait()
         self._worker = None
+        self._run_timer.stop()
         self._take_shifts()
         ca.SHIFT_LOG = None
+        ca.PREVIEW = None
         print()
         print()
         head = ("***** cancelled: %d of %d written, %d failed -- no run log"
@@ -1604,6 +1727,7 @@ class Main(QMainWindow):
         s["align"] = self.cb_align.isChecked()
         s["horizontal"] = self.cb_horiz.isChecked()
         s["shadows"] = self.sl_shadow.value()
+        s["flip"] = self.cb_flip.isChecked()
         s.setdefault("play_fps", PLAY_FPS)
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:
@@ -1621,6 +1745,10 @@ class Main(QMainWindow):
         self.cb_horiz.setChecked(bool(s.get("horizontal", False)))
         self.cb_horiz.blockSignals(False)
         self.sl_shadow.setValue(int(s.get("shadows", 0)))
+        self.cb_flip.blockSignals(True)
+        self.cb_flip.setChecked(bool(s.get("flip", False)))
+        self.cb_flip.blockSignals(False)
+        self.canvas.flip = self.cb_flip.isChecked()
         self._set_roi(self.roi, save=False, redraw=False)
         self._align_toggled(self.cb_align.isChecked())
         p = s.get("input")
@@ -1628,6 +1756,7 @@ class Main(QMainWindow):
             self.open_folder(p)
 
     def closeEvent(self, ev):
+        self._run_timer.stop()
         if self._running():
             self._worker.cancel()
             self._worker.wait()

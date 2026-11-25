@@ -78,13 +78,15 @@ python cineAlignQt.py
 1. Drop the folder with your frames on the window and name an output folder. With 50000 frames, reading the folder takes a little while.
 2. Place the search area on the sprocket hole: drag its edges, or drag inside it to move it. For horizontal alignment it has to lie inside the hole, with its right border left of the hole's edge.
 3. Press the space bar: the reel plays, and you see the detected sprocket position frame by frame. Pressing space again stops it. The lines in the picture show what is found in the current frame, the plot below shows the shift of every frame visited so far. Keys `1` and `2` switch between the frame as scanned and the frame as it will be written.
-4. Press **Start**. The output folder is shown once more for confirmation, then every frame is written.
+4. Press **Start**. The output folder is shown once more for confirmation, then every frame is written. While the run goes on, the window shows the frame just written, about once a second, and the plot below fills in with the shift of every frame processed so far.
+
+For scanners that deliver the frames upside down, **Flip** (key `y`) turns the display over; detection, search area and output are not affected.
 
 The line at the bottom of the window lists the keys.
 
 ## Status
 
-This is version 2.5: working software that one person uses on his own films, published in the hope that it is useful to others.
+This is version 2.6: working software that one person uses on his own films, published in the hope that it is useful to others.
 
 **No support is promised.** Bug reports are welcome and will be read.
 

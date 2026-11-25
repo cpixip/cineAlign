@@ -30,7 +30,7 @@ from readImage          import readImage
 from write16            import writeTIF16
 from cubeLut            import CubeLut
 
-VERSION          = '2.5'
+VERSION          = '2.6'
 
 defaultDir       = '.'
 saveDir          = '02_SPR'
@@ -140,6 +140,8 @@ def measureEdgeRef(imgPaths, roi=None, samples=EDGE_SAMPLES, cancelled=None):
 
 SHIFT_LOG = None
 
+PREVIEW = None
+
 def processImage(para):
     imgPath, outputName, lut, align = para[:4]
     roi = para[4] if len(para) > 4 and para[4] is not None else ROI_DEFAULT
@@ -168,6 +170,10 @@ def processImage(para):
         outputImage = shiftImg(inputImg, shiftX, shiftY) if search else inputImg
 
         writeTIF16(outputName, outputImage)
+
+        preview = PREVIEW
+        if preview is not None:
+            preview['last'] = (imgPath, outputImage)
 
     except Exception as e:
         return (False, imgPath, '%s: %s' % (type(e).__name__, e))
